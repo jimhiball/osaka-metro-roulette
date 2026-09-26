@@ -138,8 +138,49 @@ select{
   .mini-stat{padding:8px 5px}
   .mini-stat .v{font-size:13px}
 }
+
+.exclude-box{
+  margin-top:12px;border-top:1px solid var(--line);padding-top:10px
+}
+.exclude-box summary{
+  list-style:none;cursor:pointer;color:#7b8190;font-size:12px;font-weight:800;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0
+}
+.exclude-box summary::-webkit-details-marker{display:none}
+.exclude-box summary::after{content:"＋";font-size:16px;color:#9ca3af;font-weight:700}
+.exclude-box[open] summary::after{content:"−"}
+.exclude-inner{padding-top:10px}
+.exclude-subtitle{font-size:11px;font-weight:850;color:#7b8190;margin:8px 0 7px}
+.exclude-lines{display:flex;flex-wrap:wrap;gap:6px}
+.exclude-line-btn{
+  border:1px solid #e5e7eb;background:#fff;color:#555b66;border-radius:999px;
+  padding:6px 9px;font-size:11px;font-weight:800;cursor:pointer
+}
+.exclude-line-btn.active{
+  background:#eef0f3;border-color:#cfd4dc;color:#111827;text-decoration:line-through
+}
+.exclude-station-row{
+  display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.25fr) 50px;
+  gap:6px;align-items:center
+}
+.exclude-station-row select{
+  padding:9px 8px;font-size:12px;border-radius:11px
+}
+.exclude-add{
+  border:0;border-radius:11px;background:#eef0f3;color:#111827;
+  font-size:11px;font-weight:850;padding:9px 4px;cursor:pointer
+}
+.exclude-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.exclude-chip{
+  border:1px solid #e1e4e9;background:#f7f8fa;border-radius:999px;
+  padding:5px 8px;font-size:10.5px;font-weight:750;color:#4b5563
+}
+.exclude-chip button{
+  border:0;background:transparent;color:#9ca3af;font:inherit;padding:0 0 0 5px;cursor:pointer
+}
+.exclude-count{font-weight:700;color:#9ca3af}
+
 </style>
-</head>
 <body>
 <div class="wrap">
   <h1>大阪メトロ 駅名ルーレット</h1>
@@ -159,6 +200,25 @@ select{
       <button class="btn ghost-btn" id="undoBtn">1つ戻す</button>
       <button class="btn ghost-btn" id="resetBtn">リセット</button>
     </div>
+
+    <details class="exclude-box" id="excludeBox">
+      <summary>
+        <span>除外設定</span>
+        <span class="exclude-count" id="excludeCount">なし</span>
+      </summary>
+      <div class="exclude-inner">
+        <div class="exclude-subtitle">除外路線</div>
+        <div class="exclude-lines" id="excludeLines"></div>
+
+        <div class="exclude-subtitle">除外駅</div>
+        <div class="exclude-station-row">
+          <select id="excludeLineSelect" aria-label="除外駅の路線"></select>
+          <select id="excludeStationSelect" aria-label="除外する駅"></select>
+          <button class="exclude-add" id="excludeAddBtn">追加</button>
+        </div>
+        <div class="exclude-chips" id="excludeStationChips"></div>
+      </div>
+    </details>
   </section>
 
   <section class="card">
@@ -221,10 +281,17 @@ const candidateNames = document.getElementById("candidateNames");
 const spinStatus = document.getElementById("spinStatus");
 const progressBar = document.getElementById("progressBar");
 const resultCard = document.getElementById("resultCard");
+const excludeCount = document.getElementById("excludeCount");
+const excludeLinesEl = document.getElementById("excludeLines");
+const excludeLineSelect = document.getElementById("excludeLineSelect");
+const excludeStationSelect = document.getElementById("excludeStationSelect");
+const excludeStationChips = document.getElementById("excludeStationChips");
 
 let current = null;
 let visited = [];
 let timeLimit = 15;
+let excludedLines = [];
+let excludedStations = [];
 let spinning = false;
 let pendingWinner = null;
 let pendingRoutes = [];
@@ -239,7 +306,9 @@ function badgeHTML(lineId){
   return `<span class="line-badge"><span class="line-dot" style="background:${line.color}"></span>${line.name}</span>`;
 }
 function persist(){
-  localStorage.setItem(stateKey, JSON.stringify({current,visited,timeLimit}));
+  localStorage.setItem(stateKey, JSON.stringify({
+    current, visited, timeLimit, excludedLines, excludedStations
+  }));
 }
 function load(){
   try{
@@ -249,6 +318,12 @@ function load(){
     if(s.current && visited.includes(s.current)) current=s.current;
     else if(visited.length) current=visited[visited.length-1];
     if([10,15,20].includes(Number(s.timeLimit))) timeLimit=Number(s.timeLimit);
+    if(Array.isArray(s.excludedLines)){
+      excludedLines=s.excludedLines.filter(id=>lineOrder.includes(id));
+    }
+    if(Array.isArray(s.excludedStations)){
+      excludedStations=s.excludedStations.filter(name=>linesForStation(name).length>0);
+    }
   }catch(e){}
 }
 
@@ -280,6 +355,93 @@ function syncSelectors(){
   }
 }
 
+function populateExcludeLineSelect(){
+  excludeLineSelect.innerHTML="";
+  lineOrder.forEach(id=>{
+    const o=document.createElement("option");
+    o.value=id;
+    o.textContent=LINES[id].name;
+    excludeLineSelect.appendChild(o);
+  });
+  populateExcludeStationSelect();
+}
+function populateExcludeStationSelect(){
+  const id=excludeLineSelect.value || lineOrder[0];
+  excludeStationSelect.innerHTML="";
+  LINES[id].stations.forEach((name,i)=>{
+    const o=document.createElement("option");
+    o.value=name;
+    o.textContent=`${LINES[id].codes[i]}  ${name}`;
+    excludeStationSelect.appendChild(o);
+  });
+}
+excludeLineSelect.addEventListener("change",populateExcludeStationSelect);
+
+function renderExclusions(){
+  excludeLinesEl.innerHTML="";
+  lineOrder.forEach(id=>{
+    const btn=document.createElement("button");
+    btn.type="button";
+    btn.className="exclude-line-btn" + (excludedLines.includes(id) ? " active" : "");
+    btn.textContent=LINES[id].name;
+    btn.addEventListener("click",()=>{
+      if(excludedLines.includes(id)){
+        excludedLines=excludedLines.filter(x=>x!==id);
+      }else{
+        excludedLines.push(id);
+      }
+      pendingWinner=null; pendingRoutes=[];
+      resultCard.classList.remove("show");
+      persist();
+      renderExclusions();
+      if(current) setPrompt("まわして！","タップして抽選",false);
+      renderCandidates();
+    });
+    excludeLinesEl.appendChild(btn);
+  });
+
+  excludeStationChips.innerHTML="";
+  excludedStations.forEach(name=>{
+    const chip=document.createElement("span");
+    chip.className="exclude-chip";
+    chip.append(document.createTextNode(name));
+    const x=document.createElement("button");
+    x.type="button";
+    x.textContent="×";
+    x.setAttribute("aria-label",`${name}の除外を解除`);
+    x.addEventListener("click",()=>{
+      excludedStations=excludedStations.filter(n=>n!==name);
+      pendingWinner=null; pendingRoutes=[];
+      resultCard.classList.remove("show");
+      persist();
+      renderExclusions();
+      if(current) setPrompt("まわして！","タップして抽選",false);
+      renderCandidates();
+    });
+    chip.appendChild(x);
+    excludeStationChips.appendChild(chip);
+  });
+
+  if(!excludedStations.length){
+    excludeStationChips.innerHTML='<span class="empty">なし</span>';
+  }
+
+  const total=excludedLines.length+excludedStations.length;
+  excludeCount.textContent=total ? `${total}件` : "なし";
+}
+
+document.getElementById("excludeAddBtn").addEventListener("click",()=>{
+  const name=excludeStationSelect.value;
+  if(!name) return;
+  if(!excludedStations.includes(name)) excludedStations.push(name);
+  pendingWinner=null; pendingRoutes=[];
+  resultCard.classList.remove("show");
+  persist();
+  renderExclusions();
+  if(current) setPrompt("まわして！","タップして抽選",false);
+  renderCandidates();
+});
+
 // ----- Fixed direct ride calculations -----
 function directRoute(lineId, from, to){
   const line=LINES[lineId];
@@ -304,9 +466,13 @@ function candidateMap(){
   if(!current) return map;
   const curLines=linesForStation(current);
   curLines.forEach(lineId=>{
+    // 路線除外は「その路線を使う候補ルート」を除外する。
+    if(excludedLines.includes(lineId)) return;
+
     const line=LINES[lineId];
     line.stations.forEach(dest=>{
-      if(dest===current || visited.includes(dest)) return;
+      // 駅除外は「その駅そのもの」を候補から除外する。
+      if(dest===current || visited.includes(dest) || excludedStations.includes(dest)) return;
       const route=directRoute(lineId,current,dest);
       if(route && route.minutes<=timeLimit){
         if(!map.has(dest)) map.set(dest,[]);
@@ -608,6 +774,8 @@ document.getElementById("arriveBtn").addEventListener("click",()=>{
 
 // ----- Init -----
 load();
+populateExcludeLineSelect();
+renderExclusions();
 renderTimeTabs();
 if(current){
   syncSelectors();
